@@ -104,7 +104,7 @@ def get_tags(
 
     # Convert to a string suitable for use as a training caption
     caption = ", ".join(combined_names)
-    taglist = caption.replace("_", " ").replace("(", "\(").replace(")", "\)")
+    taglist = caption.replace("_", " ").replace("(", "\\(").replace(")", "\\)")
 
     return caption, taglist, rating_labels, char_labels, gen_labels
 
