@@ -8,7 +8,7 @@ cd "${script_dir}"
 # make venv if not exist
 if [[ ! -d .venv ]]; then
     echo "Creating virtual environment..."
-    python3.10 -m venv .venv
+    python -m venv .venv
 fi
 
 # activate the venv
