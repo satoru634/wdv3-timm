@@ -1,3 +1,4 @@
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -9,7 +10,6 @@ import torch
 from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import HfHubHTTPError
 from PIL import Image
-from simple_parsing import field, parse_known_args
 from timm.data import create_transform, resolve_data_config
 from torch import Tensor, nn
 from torch.nn import functional as F
@@ -111,10 +111,46 @@ def get_tags(
 
 @dataclass
 class ScriptOptions:
-    image_file: Path = field(positional=True)
-    model: str = field(default="vit")
-    gen_threshold: float = field(default=0.35)
-    char_threshold: float = field(default=0.75)
+    image_file: Path
+    model: str = "vit"
+    gen_threshold: float = 0.35
+    char_threshold: float = 0.75
+
+
+def parse_args() -> ScriptOptions:
+    parser = argparse.ArgumentParser(description="WD Tagger V3 で画像にタグ付けを行う")
+    parser.add_argument(
+        "-i", "--image_file",
+        type=Path,
+        required=True,
+        help="タグ付け対象の画像ファイルのパス"
+    )
+    parser.add_argument(
+        "--model", "-m",
+        type=str,
+        default="vit",
+        choices=list(MODEL_REPO_MAP.keys()),
+        help="使用するモデル名（デフォルト: vit）",
+    )
+    parser.add_argument(
+        "--gen_threshold", "-g",
+        type=float,
+        default=0.35,
+        help="一般タグの閾値（デフォルト: 0.35）",
+    )
+    parser.add_argument(
+        "--char_threshold", "-c", 
+        type=float,
+        default=0.75,
+        help="キャラクタータグの閾値（デフォルト: 0.75）",
+    )
+    args = parser.parse_args()
+    return ScriptOptions(
+        image_file=args.image_file,
+        model=args.model,
+        gen_threshold=args.gen_threshold,
+        char_threshold=args.char_threshold,
+    )
 
 
 def main(opts: ScriptOptions):
@@ -194,8 +230,5 @@ def main(opts: ScriptOptions):
 
 
 if __name__ == "__main__":
-    opts, _ = parse_known_args(ScriptOptions)
-    if opts.model not in MODEL_REPO_MAP:
-        print(f"Available models: {list(MODEL_REPO_MAP.keys())}")
-        raise ValueError(f"Unknown model name '{opts.model}'")
+    opts = parse_args()
     main(opts)
