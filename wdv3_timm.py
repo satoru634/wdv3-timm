@@ -155,6 +155,37 @@ def parse_args() -> ScriptOptions:
     )
 
 
+def show_results(
+    caption: str,
+    taglist: str,
+    ratings: dict[str, float],
+    character: dict[str, float],
+    general: dict[str, float],
+    opts: ScriptOptions,
+) -> None:
+    print("--------")
+    print(f"Caption: {caption}")
+    print("--------")
+    print(f"Tags: {taglist}")
+
+    print("--------")
+    print("Ratings:")
+    for k, v in ratings.items():
+        print(f"  {k}: {v:.3f}")
+
+    print("--------")
+    print(f"Character tags (threshold={opts.char_threshold}):")
+    for k, v in character.items():
+        print(f"  {k}: {v:.3f}")
+
+    print("--------")
+    print(f"General tags (threshold={opts.gen_threshold}):")
+    for k, v in general.items():
+        print(f"  {k}: {v:.3f}")
+
+    print("Done!")
+
+
 def main(opts: ScriptOptions):
     repo_id = MODEL_REPO_MAP.get(opts.model)
     image_path = Path(opts.image_file).resolve()
@@ -208,27 +239,7 @@ def main(opts: ScriptOptions):
         char_threshold=opts.char_threshold,
     )
 
-    print("--------")
-    print(f"Caption: {caption}")
-    print("--------")
-    print(f"Tags: {taglist}")
-
-    print("--------")
-    print("Ratings:")
-    for k, v in ratings.items():
-        print(f"  {k}: {v:.3f}")
-
-    print("--------")
-    print(f"Character tags (threshold={opts.char_threshold}):")
-    for k, v in character.items():
-        print(f"  {k}: {v:.3f}")
-
-    print("--------")
-    print(f"General tags (threshold={opts.gen_threshold}):")
-    for k, v in general.items():
-        print(f"  {k}: {v:.3f}")
-
-    print("Done!")
+    show_results(caption, taglist, ratings, character, general, opts)
 
 
 if __name__ == "__main__":
