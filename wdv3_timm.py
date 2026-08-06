@@ -1,4 +1,5 @@
 import argparse
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -117,6 +118,7 @@ class ScriptOptions:
     model: str = "vit"
     gen_threshold: float = 0.35
     char_threshold: float = 0.75
+    output: Optional[Path] = None
 
 
 def parse_args() -> ScriptOptions:
@@ -141,10 +143,16 @@ def parse_args() -> ScriptOptions:
         help="一般タグの閾値（デフォルト: 0.35）",
     )
     parser.add_argument(
-        "--char_threshold", "-c", 
+        "--char_threshold", "-c",
         type=float,
         default=0.75,
         help="キャラクタータグの閾値（デフォルト: 0.75）",
+    )
+    parser.add_argument(
+        "--output", "-o",
+        type=Path,
+        default=None,
+        help="結果をJSON形式で保存するファイルパス（指定しない場合は標準出力にテキスト表示）",
     )
     args = parser.parse_args()
     return ScriptOptions(
@@ -152,6 +160,7 @@ def parse_args() -> ScriptOptions:
         model=args.model,
         gen_threshold=args.gen_threshold,
         char_threshold=args.char_threshold,
+        output=args.output,
     )
 
 
@@ -184,6 +193,35 @@ def show_results(
         print(f"  {k}: {v:.3f}")
 
     print("Done!")
+
+
+def save_results_json(
+    caption: str,
+    taglist: str,
+    ratings: dict[str, float],
+    character: dict[str, float],
+    general: dict[str, float],
+    opts: ScriptOptions,
+) -> None:
+    result = {
+        "image_file": str(opts.image_file),
+        "model": opts.model,
+        "caption": caption,
+        "tags": taglist,
+        "thresholds": {
+            "general": opts.gen_threshold,
+            "character": opts.char_threshold,
+        },
+        "ratings": {k: float(v) for k, v in ratings.items()},
+        "character": {k: float(v) for k, v in character.items()},
+        "general": {k: float(v) for k, v in general.items()},
+    }
+
+    opts.output.parent.mkdir(parents=True, exist_ok=True)
+    with open(opts.output, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    print(f"結果をJSONファイルに保存しました: {opts.output}")
 
 
 def main(opts: ScriptOptions):
@@ -239,7 +277,10 @@ def main(opts: ScriptOptions):
         char_threshold=opts.char_threshold,
     )
 
-    show_results(caption, taglist, ratings, character, general, opts)
+    if opts.output is not None:
+        save_results_json(caption, taglist, ratings, character, general, opts)
+    else:
+        show_results(caption, taglist, ratings, character, general, opts)
 
 
 if __name__ == "__main__":
