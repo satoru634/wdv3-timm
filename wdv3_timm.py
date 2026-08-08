@@ -23,6 +23,7 @@ MODEL_REPO_MAP = {
     "eva02": "SmilingWolf/wd-eva02-large-tagger-v3",
     "vit-large": "SmilingWolf/wd-vit-large-tagger-v3",
 }
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
 
 def pil_ensure_rgb(image: Image.Image) -> Image.Image:
@@ -45,6 +46,12 @@ def pil_pad_square(image: Image.Image) -> Image.Image:
     canvas = Image.new("RGB", (px, px), (255, 255, 255))
     canvas.paste(image, ((px - w) // 2, (px - h) // 2))
     return canvas
+
+
+def find_image_files(directory: Path) -> list[Path]:
+    # ディレクトリ配下（サブディレクトリを含む）の画像ファイルをパスの昇順で取得する
+    files = [p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS]
+    return sorted(files)
 
 
 @dataclass
@@ -114,7 +121,7 @@ def get_tags(
 
 @dataclass
 class ScriptOptions:
-    image_file: Path
+    input_path: Path
     model: str = "vit"
     gen_threshold: float = 0.35
     char_threshold: float = 0.75
@@ -124,10 +131,11 @@ class ScriptOptions:
 def parse_args() -> ScriptOptions:
     parser = argparse.ArgumentParser(description="WD Tagger V3 で画像にタグ付けを行う")
     parser.add_argument(
-        "-i", "--image_file",
+        "-i", "--input",
         type=Path,
         required=True,
-        help="タグ付け対象の画像ファイルのパス"
+        help="タグ付け対象の画像ファイル、またはディレクトリのパス"
+        "（ディレクトリの場合はサブディレクトリも含めて再帰的に処理する）",
     )
     parser.add_argument(
         "--model", "-m",
@@ -152,11 +160,13 @@ def parse_args() -> ScriptOptions:
         "--output", "-o",
         type=Path,
         default=None,
-        help="結果をJSON形式で保存するファイルパス（指定しない場合は標準出力にテキスト表示）",
+        help="結果をJSON形式で保存するファイルパス"
+        "（ディレクトリを処理した場合は全画像分の結果を配列としてまとめて保存する。"
+        "指定しない場合は標準出力にテキスト表示）",
     )
     args = parser.parse_args()
     return ScriptOptions(
-        image_file=args.image_file,
+        input_path=args.input,
         model=args.model,
         gen_threshold=args.gen_threshold,
         char_threshold=args.char_threshold,
@@ -171,7 +181,10 @@ def show_results(
     character: dict[str, float],
     general: dict[str, float],
     opts: ScriptOptions,
+    image_path: Optional[Path] = None,
 ) -> None:
+    if image_path is not None:
+        print(f"===== {image_path} =====")
     print("--------")
     print(f"Caption: {caption}")
     print("--------")
@@ -195,16 +208,17 @@ def show_results(
     print("Done!")
 
 
-def save_results_json(
+def build_result_dict(
+    image_path: Path,
     caption: str,
     taglist: str,
     ratings: dict[str, float],
     character: dict[str, float],
     general: dict[str, float],
     opts: ScriptOptions,
-) -> None:
-    result = {
-        "image_file": str(opts.image_file),
+) -> dict:
+    return {
+        "image_file": str(image_path),
         "model": opts.model,
         "caption": caption,
         "tags": taglist,
@@ -217,31 +231,25 @@ def save_results_json(
         "general": {k: float(v) for k, v in general.items()},
     }
 
+
+def save_results_json(results: list[dict], opts: ScriptOptions) -> None:
+    # 画像1件のみの場合は従来通りオブジェクト、複数件の場合は配列として保存する
+    output_data = results[0] if len(results) == 1 else results
+
     opts.output.parent.mkdir(parents=True, exist_ok=True)
     with open(opts.output, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+        json.dump(output_data, f, ensure_ascii=False, indent=2)
 
     print(f"結果をJSONファイルに保存しました: {opts.output}")
 
 
-def main(opts: ScriptOptions):
-    repo_id = MODEL_REPO_MAP.get(opts.model)
-    image_path = Path(opts.image_file).resolve()
-    if not image_path.is_file():
-        raise FileNotFoundError(f"Image file not found: {image_path}")
-
-    print(f"Loading model '{opts.model}' from '{repo_id}'...")
-    model: nn.Module = timm.create_model("hf-hub:" + repo_id).eval()
-    state_dict = timm.models.load_state_dict_from_hf(repo_id)
-    model.load_state_dict(state_dict)
-
-    print("Loading tag list...")
-    labels: LabelData = load_labels_hf(repo_id=repo_id)
-
-    print("Creating data transform...")
-    transform = create_transform(**resolve_data_config(model.pretrained_cfg, model=model))
-
-    print("Loading image and preprocessing...")
+def process_image(
+    image_path: Path,
+    model: nn.Module,
+    transform,
+    labels: LabelData,
+    opts: ScriptOptions,
+):
     # get image
     img_input: Image.Image = Image.open(image_path)
     # ensure image is RGB
@@ -253,34 +261,71 @@ def main(opts: ScriptOptions):
     # NCHW image RGB to BGR
     inputs = inputs[:, [2, 1, 0]]
 
-    print("Running inference...")
     with torch.inference_mode():
-        # move model to GPU, if available
         if torch_device.type != "cpu":
-            model = model.to(torch_device)
             inputs = inputs.to(torch_device)
         # run the model
         outputs = model.forward(inputs)
         # apply the final activation function (timm doesn't support doing this internally)
         outputs = F.sigmoid(outputs)
-        # move inputs, outputs, and model back to to cpu if we were on GPU
         if torch_device.type != "cpu":
-            inputs = inputs.to("cpu")
             outputs = outputs.to("cpu")
-            model = model.to("cpu")
 
-    print("Processing results...")
-    caption, taglist, ratings, character, general = get_tags(
+    return get_tags(
         probs=outputs.squeeze(0),
         labels=labels,
         gen_threshold=opts.gen_threshold,
         char_threshold=opts.char_threshold,
     )
 
-    if opts.output is not None:
-        save_results_json(caption, taglist, ratings, character, general, opts)
+
+def main(opts: ScriptOptions):
+    repo_id = MODEL_REPO_MAP.get(opts.model)
+    input_path = Path(opts.input_path).resolve()
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input path not found: {input_path}")
+
+    if input_path.is_dir():
+        image_paths = find_image_files(input_path)
+        if not image_paths:
+            raise FileNotFoundError(f"No image files found in directory: {input_path}")
     else:
-        show_results(caption, taglist, ratings, character, general, opts)
+        image_paths = [input_path]
+
+    print(f"Loading model '{opts.model}' from '{repo_id}'...")
+    model: nn.Module = timm.create_model("hf-hub:" + repo_id).eval()
+    state_dict = timm.models.load_state_dict_from_hf(repo_id)
+    model.load_state_dict(state_dict)
+    # move model to GPU, if available
+    if torch_device.type != "cpu":
+        model = model.to(torch_device)
+
+    print("Loading tag list...")
+    labels: LabelData = load_labels_hf(repo_id=repo_id)
+
+    print("Creating data transform...")
+    transform = create_transform(**resolve_data_config(model.pretrained_cfg, model=model))
+
+    is_multiple = len(image_paths) > 1
+    result_dicts = []
+    for i, image_path in enumerate(image_paths, start=1):
+        print(f"[{i}/{len(image_paths)}] '{image_path.name}' を処理中...")
+        caption, taglist, ratings, character, general = process_image(
+            image_path, model, transform, labels, opts
+        )
+
+        if opts.output is not None:
+            result_dicts.append(
+                build_result_dict(image_path, caption, taglist, ratings, character, general, opts)
+            )
+        else:
+            show_results(
+                caption, taglist, ratings, character, general, opts,
+                image_path=image_path if is_multiple else None,
+            )
+
+    if opts.output is not None:
+        save_results_json(result_dicts, opts)
 
 
 if __name__ == "__main__":
