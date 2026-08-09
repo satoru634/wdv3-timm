@@ -59,6 +59,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+/wdv3_timm.exe
 downloads/
 eggs/
 .eggs/
