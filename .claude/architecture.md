@@ -10,3 +10,9 @@
 6. **出力**: `--output` 指定時は `build_result_dict()` で画像ごとの結果を辞書化し、`save_results_json()` が画像1枚なら単一オブジェクト、複数枚なら配列としてJSONファイルに保存する。未指定時は `show_results()` が標準出力にテキスト表示（複数枚の場合は画像パスの見出しを付けて連続表示）。
 
 モデル・タグリストは実行のたびに Hugging Face Hub からダウンロードされる（ローカルキャッシュされるが、リポジトリ内に重みは含まれない）。
+
+## launcher.py（exe 化用ランチャー）
+
+`wdv3_timm.py` を PyInstaller でそのまま exe 化すると、torch 同梱によりファイルサイズが肥大化するうえ、PyInstaller のブートローダー環境下で torch のネイティブ DLL 初期化が失敗する（`WinError 1114` / `ERROR_DLL_INIT_FAILED`）既知の非互換が発生する。
+
+そのため `launcher.py`（標準ライブラリのみで構成）だけを PyInstaller で exe 化し、実行時に本リポジトリの `.venv\Scripts\python.exe` で `wdv3_timm.py` をサブプロセス起動する構成にしている。`.venv` と `wdv3_timm.py` の場所は `sys.executable`（frozen 実行時）／`__file__`（スクリプト実行時）を基準にした相対解決で求めており、`wdv3_timm.exe` はリポジトリ直下（`.venv`・`wdv3_timm.py` と同じフォルダ）に置いた状態で使う必要がある（フォルダごとであれば移動・コピーしても動作する）。標準入出力・終了コードはサブプロセスからそのまま透過する。

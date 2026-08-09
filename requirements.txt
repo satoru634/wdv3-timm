@@ -8,3 +8,9 @@ tokenizers
 torch >= 2.0.0
 torchvision
 transformers
+
+# 実行ファイル化（PyInstaller）用のビルド時依存関係
+# launcher.py（標準ライブラリのみで構成した軽量ランチャー）を exe 化するために使用する。
+# 本体（wdv3_timm.py / torch 等）は .venv 上のプロセスとしてランチャーから呼び出すため、
+# torch などの重量級ライブラリを PyInstaller の同梱対象にする必要はない。
+pyinstaller
