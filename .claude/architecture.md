@@ -11,6 +11,17 @@
 
 モデル・タグリストは実行のたびに Hugging Face Hub からダウンロードされる（ローカルキャッシュされるが、リポジトリ内に重みは含まれない）。
 
+## サーバーモード（`--serve`、`run_serve_mode()`）
+
+通常モードは実行のたびにモデルをロードして1回限りの処理で終了する単発 CLI だが、他ツールから複数画像を連続してタグ付けする用途ではこの都度ロードが大きなオーバーヘッドになる。`--serve` はこれを避けるための常駐サーバーモードで、`main()` は `opts.serve` が真の場合、通常モードの入力パス解決・バッチループに入る前に `run_serve_mode()` へ処理を委譲する。
+
+1. **モデルロード（1度だけ）**: 通常モードの `main()` と同じ手順（`timm.create_model` → `load_state_dict_from_hf` → GPU 転送、`load_labels_hf()`、`create_transform`/`resolve_data_config`）でモデル・タグリスト・transform を構築する。進捗ログはすべて標準エラー出力に書く（標準出力は後述のプロトコル専用のため）。
+2. **準備完了通知**: ロード完了後、標準出力へ1行だけ `{"status": "ready"}` を出力する（`flush=True`）。他ツール側はこの1行を読むまでブロックして待機する想定。
+3. **リクエストループ**: `for line in sys.stdin:` で標準入力を1行ずつ読む。各行は `{"image_path": "<パス>"}` の JSON として解釈し、`process_image()`（通常モードと共通のバッチ内1画像処理関数）を呼んで `caption`（アンダースコア保持・括弧未エスケープの生タグ文字列、`build_result_dict()` の `caption` と同一形式）を取得し、`{"status": "ok", "tags": caption}` を標準出力へ1行返す。JSON パース失敗・ファイル欠落・画像破損など、リクエスト処理中に起きた例外はすべて `except Exception` で捕捉し `{"status": "error", "message": str(e)}` として応答する（1件の失敗でサーバー自体を落とさない設計。`ComfyUILibs.Services.CaptioningService.ProcessImageAsync` が1画像の例外を捕捉して処理を継続するのと同じ考え方）。
+4. **終了**: クライアントが標準入力を閉じる（EOF）と `for line in sys.stdin:` ループが自然に終了し、`run_serve_mode()` から戻って `main()` も終了する（終了コード0）。
+
+このプロトコルは他ツール（例: C# 版 [ComfyUILibs](https://github.com/satoru634/ComfyUILibs) の `Services/IWdV3TimmProcessClient.cs`）から常駐プロセスとして起動されることを想定して設計されている。プロトコルの詳細な契約は [usage.md](usage.md) の「サーバーモード」節を参照。
+
 ## launcher.py（exe 化用ランチャー）
 
 `wdv3_timm.py` を PyInstaller でそのまま exe 化すると、torch 同梱によりファイルサイズが肥大化するうえ、PyInstaller のブートローダー環境下で torch のネイティブ DLL 初期化が失敗する（`WinError 1114` / `ERROR_DLL_INIT_FAILED`）既知の非互換が発生する。
