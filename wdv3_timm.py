@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -121,11 +122,12 @@ def get_tags(
 
 @dataclass
 class ScriptOptions:
-    input_path: Path
+    input_path: Optional[Path] = None
     model: str = "vit"
     gen_threshold: float = 0.35
     char_threshold: float = 0.75
     output: Optional[Path] = None
+    serve: bool = False
 
 
 def parse_args() -> ScriptOptions:
@@ -133,9 +135,10 @@ def parse_args() -> ScriptOptions:
     parser.add_argument(
         "-i", "--input",
         type=Path,
-        required=True,
+        default=None,
         help="タグ付け対象の画像ファイル、またはディレクトリのパス"
-        "（ディレクトリの場合はサブディレクトリも含めて再帰的に処理する）",
+        "（ディレクトリの場合はサブディレクトリも含めて再帰的に処理する）。"
+        "--serve 指定時は不要。",
     )
     parser.add_argument(
         "--model", "-m",
@@ -164,13 +167,25 @@ def parse_args() -> ScriptOptions:
         "（ディレクトリを処理した場合は全画像分の結果を配列としてまとめて保存する。"
         "指定しない場合は標準出力にテキスト表示）",
     )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="標準入出力による常駐サーバーモードで起動する。モデルを一度だけロードし、"
+        "標準入力から受け取る画像パスを次々にタグ付けする（他ツールから連続して"
+        "呼び出す用途。プロトコルの詳細は .claude/usage.md のサーバーモード節を参照）",
+    )
     args = parser.parse_args()
+
+    if not args.serve and args.input is None:
+        parser.error("-i/--input は --serve 指定時を除き必須です")
+
     return ScriptOptions(
         input_path=args.input,
         model=args.model,
         gen_threshold=args.gen_threshold,
         char_threshold=args.char_threshold,
         output=args.output,
+        serve=args.serve,
     )
 
 
@@ -279,7 +294,64 @@ def process_image(
     )
 
 
+def run_serve_mode(opts: ScriptOptions) -> None:
+    """標準入出力による常駐サーバーモード。モデルを一度だけロードし、以降は
+    標準入力から受け取った画像パスを次々にタグ付けして標準出力へ応答する。
+
+    他ツール（C# 版 ComfyUILibs.Services.IWdV3TimmProcessClient 等）と対になるプロトコル契約:
+
+    - モデルロード完了後、標準出力へ1行だけ ``{"status": "ready"}`` を出力する。
+      ロード中の進捗ログ等はすべて標準エラー出力に書く（標準出力はプロトコル専用とする）。
+    - リクエストは標準入力から1行1JSON（``{"image_path": "<パス>"}``）で受け取る。
+    - 応答は標準出力へ1行1JSONで返す。
+      成功時: ``{"status": "ok", "tags": "<comma-separated caption>"}``
+      （タグはアンダースコアを保持し括弧もエスケープしない、build_result_dict の caption と同じ形式）。
+      失敗時: ``{"status": "error", "message": "<エラー内容>"}``。
+      画像1枚の処理失敗（ファイル欠落・破損画像・不正なリクエスト等）はプロセスを終了させず、
+      エラー応答を返して次のリクエストを待ち受ける。
+    - 標準入力が閉じられたら（EOF）ループを終了し、終了コード0でプロセスを終了する。
+    """
+    repo_id = MODEL_REPO_MAP.get(opts.model)
+
+    print(f"Loading model '{opts.model}' from '{repo_id}'...", file=sys.stderr)
+    model: nn.Module = timm.create_model("hf-hub:" + repo_id).eval()
+    state_dict = timm.models.load_state_dict_from_hf(repo_id)
+    model.load_state_dict(state_dict)
+    if torch_device.type != "cpu":
+        model = model.to(torch_device)
+
+    print("Loading tag list...", file=sys.stderr)
+    labels: LabelData = load_labels_hf(repo_id=repo_id)
+
+    print("Creating data transform...", file=sys.stderr)
+    transform = create_transform(**resolve_data_config(model.pretrained_cfg, model=model))
+
+    print("Ready. Waiting for requests on stdin...", file=sys.stderr)
+    print(json.dumps({"status": "ready"}), flush=True)
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            request = json.loads(line)
+            image_path = Path(request["image_path"])
+            caption, _taglist, _ratings, _character, _general = process_image(
+                image_path, model, transform, labels, opts
+            )
+            response = {"status": "ok", "tags": caption}
+        except Exception as e:  # noqa: BLE001 - 1件の失敗でサーバーを落とさず応答として返す
+            response = {"status": "error", "message": str(e)}
+
+        print(json.dumps(response, ensure_ascii=False), flush=True)
+
+
 def main(opts: ScriptOptions):
+    if opts.serve:
+        run_serve_mode(opts)
+        return
+
     repo_id = MODEL_REPO_MAP.get(opts.model)
     input_path = Path(opts.input_path).resolve()
     if not input_path.exists():
